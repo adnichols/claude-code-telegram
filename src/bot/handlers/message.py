@@ -1,7 +1,7 @@
 """Message handlers for non-command inputs."""
 
 import asyncio
-from typing import Optional
+from typing import Optional, Any
 
 import structlog
 from telegram import Update
