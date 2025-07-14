@@ -160,6 +160,22 @@ class Settings(BaseSettings):
             return [int(uid.strip()) for uid in v.split(",") if uid.strip()]
         return v  # type: ignore[no-any-return]
 
+    @field_validator("claude_allowed_tools", mode="before")
+    @classmethod
+    def parse_claude_allowed_tools(cls, v: Any) -> Optional[List[str]]:
+        """Parse comma-separated tools list."""
+        if isinstance(v, str):
+            return [tool.strip() for tool in v.split(",") if tool.strip()]
+        return v  # type: ignore[no-any-return]
+
+    @field_validator("claude_disallowed_tools", mode="before")
+    @classmethod
+    def parse_claude_disallowed_tools(cls, v: Any) -> Optional[List[str]]:
+        """Parse comma-separated disallowed tools list."""
+        if isinstance(v, str):
+            return [tool.strip() for tool in v.split(",") if tool.strip()]
+        return v  # type: ignore[no-any-return]
+
     @field_validator("approved_directory")
     @classmethod
     def validate_approved_directory(cls, v: Any) -> Path:

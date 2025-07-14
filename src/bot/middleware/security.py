@@ -178,12 +178,19 @@ async def validate_message_content(
 
     # Sanitize content using security validator
     sanitized = security_validator.sanitize_command_input(text)
-    if len(sanitized) < len(text) * 0.5:  # More than 50% removed
+
+    # Only block if content is extremely malicious (>80% removed) AND short
+    # This prevents false positives on code snippets with special characters
+    removal_ratio = (len(text) - len(sanitized)) / len(text) if len(text) > 0 else 0
+
+    # More lenient: only block if >80% removed AND original message is short (<100 chars)
+    # This allows code snippets and technical content while blocking obvious attacks
+    if removal_ratio > 0.8 and len(text) < 100:
         if audit_logger:
             await audit_logger.log_security_violation(
                 user_id=user_id,
                 violation_type="excessive_sanitization",
-                details="More than 50% of content was dangerous",
+                details=f"Content {removal_ratio:.1%} dangerous characters (original: {len(text)}, sanitized: {len(sanitized)})",
                 severity="medium",
                 attempted_action="message_send",
             )
@@ -193,6 +200,7 @@ async def validate_message_content(
             user_id=user_id,
             original_length=len(text),
             sanitized_length=len(sanitized),
+            removal_ratio=removal_ratio,
         )
         return False, "Content contains too many dangerous characters"
 
