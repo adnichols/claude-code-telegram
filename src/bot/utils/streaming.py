@@ -1,6 +1,7 @@
 """Core streaming utilities for real-time Claude response streaming."""
 
 import asyncio
+import re
 import time
 from typing import Optional, Callable, Any, Dict, List
 from datetime import datetime, timedelta
@@ -69,8 +70,11 @@ class StreamProcessor:
     
     async def _send_header_message(self, context: StreamContext, update: Update) -> None:
         """Send the initial header message."""
-        session_info = f"Session: {context.session_id[:8]}..." if context.session_id else "New session"
-        header_text = f"🚀 **Claude Session Started** • {session_info}"
+        if context.session_id:
+            session_info = f"Session: {self._escape_markdown(context.session_id[:8])}..."
+        else:
+            session_info = "New session"
+        header_text = f"🚀 *Claude Session Started* • {session_info}"
         
         try:
             header_msg = await update.message.reply_text(
@@ -303,6 +307,16 @@ class StreamProcessor:
     def get_stream_context(self, user_id: int) -> Optional[StreamContext]:
         """Get the current stream context for a user."""
         return self.active_streams.get(user_id)
+    
+    def _escape_markdown(self, text: str) -> str:
+        """Escape special Markdown characters."""
+        if not text:
+            return ""
+        # Escape special markdown characters
+        escape_chars = ['*', '_', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in escape_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
 
 
 class StreamRateLimiter:

@@ -81,6 +81,24 @@ class MessageManager:
             
             return telegram_msg
             
+        except BadRequest as e:
+            if "can't parse entities" in str(e).lower():
+                # Fallback to plain text if markdown parsing fails
+                logger.warning("Markdown parsing failed, sending as plain text", error=str(e))
+                try:
+                    telegram_msg = await bot.send_message(
+                        chat_id=context.chat_id,
+                        text=content,
+                        reply_markup=reply_markup
+                    )
+                    stream_msg = context.add_message(message_type, content, telegram_msg)
+                    return telegram_msg
+                except Exception as fallback_e:
+                    logger.error("Failed to send even plain text message", error=str(fallback_e))
+                    return None
+            else:
+                logger.error("Telegram API error", user_id=user_id, error=str(e))
+                return None
         except Exception as e:
             logger.error("Failed to send stream message", user_id=user_id, error=str(e))
             return None
@@ -116,7 +134,8 @@ class MessageManager:
     async def handle_tool_start(self, user_id: int, tool_name: str, 
                               tool_input: Optional[Dict] = None) -> None:
         """Handle the start of a tool execution."""
-        tool_text = f"🔧 **Using {tool_name}**"
+        escaped_tool_name = self._escape_markdown(tool_name)
+        tool_text = f"🔧 *Using {escaped_tool_name}*"
         
         # Add tool input information if available
         if tool_input:
@@ -146,14 +165,16 @@ class MessageManager:
         # Update the tool message
         status_emoji = "❌" if not success else "✅"
         duration_text = f" ({execution_time_ms}ms)" if execution_time_ms else ""
+        escaped_tool_name = self._escape_markdown(tool_name)
         
         if not success:
-            updated_text = f"{status_emoji} **{tool_name} failed**{duration_text}"
+            updated_text = f"{status_emoji} *{escaped_tool_name} failed*{duration_text}"
             if error:
                 error_preview = error[:100] + "..." if len(error) > 100 else error
-                updated_text += f"\n_{error_preview}_"
+                escaped_error = self._escape_markdown(error_preview)
+                updated_text += f"\n`{escaped_error}`"
         else:
-            updated_text = f"{status_emoji} **{tool_name} complete**{duration_text}"
+            updated_text = f"{status_emoji} *{escaped_tool_name} complete*{duration_text}"
         
         await self.update_stream_message(
             user_id, tool_exec.message_id, updated_text, 'tool'
@@ -176,7 +197,7 @@ class MessageManager:
             self._queue_content_update(user_id, context)
         else:
             # Create new content message
-            initial_content = f"🤖 **Claude Response:**\n\n{content_chunk}"
+            initial_content = f"🤖 *Claude Response:*\n\n{content_chunk}"
             await self.send_stream_message(user_id, 'content', initial_content)
     
     async def finalize_stream(self, user_id: int, cost: float = 0.0,
@@ -216,7 +237,7 @@ class MessageManager:
         duration = datetime.now() - context.start_time
         duration_text = f"{duration.total_seconds():.1f}s"
         
-        status_text = f"✅ **Session Complete**"
+        status_text = f"✅ *Session Complete*"
         status_text += f"\n💰 Cost: ${cost:.4f}"
         status_text += f"\n⏱️ Duration: {duration_text}"
         
@@ -228,7 +249,7 @@ class MessageManager:
         if follow_up_suggestions:
             from .formatting import ResponseFormatter
             # This would create suggestion buttons - simplified for now
-            status_text += "\n\n💡 **What would you like to do next?**"
+            status_text += "\n\n💡 *What would you like to do next?*"
         
         await self.send_stream_message(
             context.user_id, 'status', status_text, reply_markup=reply_markup
@@ -319,6 +340,14 @@ class MessageManager:
             if "not modified" in str(e).lower():
                 # Content is the same, ignore
                 pass
+            elif "can't parse entities" in str(e).lower():
+                # Fallback to plain text
+                logger.warning("Markdown parsing failed in update, trying plain text", error=str(e))
+                try:
+                    await stream_msg.telegram_message.edit_text(new_content)
+                    stream_msg.update_content(new_content)
+                except Exception as fallback_e:
+                    logger.warning("Failed to update even as plain text", error=str(fallback_e))
             else:
                 logger.warning("Failed to edit message", error=str(e))
         except Exception as e:
@@ -370,8 +399,19 @@ class MessageManager:
     
     async def handle_error(self, user_id: int, error: str) -> None:
         """Handle streaming errors by sending error message."""
-        error_text = f"❌ **Streaming Error**\n\n_{error}_"
+        escaped_error = self._escape_markdown(error)
+        error_text = f"❌ *Streaming Error*\n\n`{escaped_error}`"
         await self.send_stream_message(user_id, 'error', error_text)
         
         # Clean up the stream
         await self._cleanup_user_streaming(user_id)
+    
+    def _escape_markdown(self, text: str) -> str:
+        """Escape special Markdown characters."""
+        if not text:
+            return ""
+        # Escape special markdown characters
+        escape_chars = ['*', '_', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in escape_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
