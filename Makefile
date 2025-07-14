@@ -16,7 +16,6 @@ install:
 
 dev:
 	poetry install
-	poetry run pre-commit install --install-hooks || echo "pre-commit not configured yet"
 
 test:
 	poetry run pytest
