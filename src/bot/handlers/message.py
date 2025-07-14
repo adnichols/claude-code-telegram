@@ -12,6 +12,8 @@ from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.rate_limiter import RateLimiter
 from ...security.validators import SecurityValidator
+from ..utils.streaming import StreamProcessor
+from ..utils.message_manager import MessageManager
 
 logger = structlog.get_logger()
 
@@ -155,15 +157,6 @@ async def handle_text_message(
                 await update.message.reply_text(f"⏱️ {limit_message}")
                 return
 
-        # Send typing indicator
-        await update.message.chat.send_action("typing")
-
-        # Create progress message
-        progress_msg = await update.message.reply_text(
-            "🤔 Processing your request...",
-            reply_to_message_id=update.message.message_id,
-        )
-
         # Get Claude integration and storage from context
         claude_integration = context.bot_data.get("claude_integration")
         storage = context.bot_data.get("storage")
@@ -185,14 +178,53 @@ async def handle_text_message(
         # Get existing session ID
         session_id = context.user_data.get("claude_session_id")
 
-        # Enhanced stream updates handler with progress tracking
-        async def stream_handler(update_obj):
+        # Initialize streaming system
+        stream_processor = StreamProcessor(settings)
+        message_manager = MessageManager(stream_processor)
+        message_manager.set_bot_instance(context.bot)
+
+        # Check if streaming is enabled
+        use_streaming = (
+            settings.enable_streaming_messages and 
+            settings.streaming_mode != "disabled"
+        )
+
+        if use_streaming:
+            # Start streaming session
             try:
-                progress_text = await _format_progress_update(update_obj)
-                if progress_text:
-                    await progress_msg.edit_text(progress_text, parse_mode="Markdown")
+                stream_context = await message_manager.start_streaming_response(
+                    update, user_id, session_id
+                )
             except Exception as e:
-                logger.warning("Failed to update progress message", error=str(e))
+                logger.warning("Failed to start streaming, falling back to simple mode", error=str(e))
+                use_streaming = False
+
+        # Set up stream handler
+        if use_streaming:
+            async def enhanced_stream_handler(update_obj):
+                try:
+                    await _handle_enhanced_stream_update(message_manager, user_id, update_obj)
+                except Exception as e:
+                    logger.warning("Enhanced stream handler failed", error=str(e))
+            
+            stream_handler = enhanced_stream_handler
+        else:
+            # Fallback to simple progress message
+            await update.message.chat.send_action("typing")
+            progress_msg = await update.message.reply_text(
+                "🤔 Processing your request...",
+                reply_to_message_id=update.message.message_id,
+            )
+
+            async def simple_stream_handler(update_obj):
+                try:
+                    progress_text = await _format_progress_update(update_obj)
+                    if progress_text:
+                        await progress_msg.edit_text(progress_text, parse_mode="Markdown")
+                except Exception as e:
+                    logger.warning("Failed to update progress message", error=str(e))
+            
+            stream_handler = simple_stream_handler
 
         # Run Claude command
         try:
@@ -225,13 +257,25 @@ async def handle_text_message(
                 except Exception as e:
                     logger.warning("Failed to log interaction to storage", error=str(e))
 
-            # Format response
-            from ..utils.formatting import ResponseFormatter
-
-            formatter = ResponseFormatter(settings)
-            formatted_messages = formatter.format_claude_response(
-                claude_response.content
-            )
+            # Handle response based on streaming mode
+            if use_streaming:
+                # Finalize streaming session
+                await message_manager.finalize_stream(
+                    user_id=user_id,
+                    cost=claude_response.cost,
+                    follow_up_suggestions=None  # We'll add this later
+                )
+                # Skip traditional message sending for streaming mode
+                formatted_messages = []
+            else:
+                # Traditional response formatting
+                await progress_msg.delete()
+                
+                from ..utils.formatting import ResponseFormatter
+                formatter = ResponseFormatter(settings)
+                formatted_messages = formatter.format_claude_response(
+                    claude_response.content
+                )
 
         except ClaudeToolValidationError as e:
             # Tool validation error with detailed instructions
@@ -883,3 +927,40 @@ def _update_working_directory_from_claude_response(
                     "Invalid path in Claude response", path=match, error=str(e)
                 )
                 continue
+
+
+async def _handle_enhanced_stream_update(message_manager: MessageManager, 
+                                       user_id: int, update_obj: Any) -> None:
+    """Handle enhanced streaming updates."""
+    try:
+        if update_obj.type == "tool_use":
+            # Tool execution started
+            tool_name = getattr(update_obj, 'name', 'Unknown Tool')
+            tool_input = getattr(update_obj, 'input', None)
+            await message_manager.handle_tool_start(user_id, tool_name, tool_input)
+            
+        elif update_obj.type == "tool_result":
+            # Tool execution completed
+            tool_name = getattr(update_obj, 'tool_name', 'Unknown')
+            is_error = getattr(update_obj, 'is_error', False)
+            error_msg = getattr(update_obj, 'error', None) if is_error else None
+            execution_time = getattr(update_obj, 'execution_time_ms', None)
+            
+            await message_manager.handle_tool_complete(
+                user_id, tool_name, not is_error, error_msg, execution_time
+            )
+            
+        elif update_obj.type == "assistant" and update_obj.content:
+            # Content streaming
+            await message_manager.handle_content_stream(user_id, update_obj.content)
+            
+        elif update_obj.type == "progress":
+            # Progress updates - for now we just log them
+            # In the future we could show these as status updates
+            progress_text = getattr(update_obj, 'content', 'Working...')
+            logger.debug("Progress update", user_id=user_id, progress=progress_text)
+            
+    except Exception as e:
+        logger.warning("Failed to handle enhanced stream update", error=str(e))
+        # Try to send error message through stream
+        await message_manager.handle_error(user_id, str(e))

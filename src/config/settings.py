@@ -134,6 +134,13 @@ class Settings(BaseSettings):
     enable_file_uploads: bool = Field(True, description="Enable file upload handling")
     enable_quick_actions: bool = Field(True, description="Enable quick action buttons")
 
+    # Streaming settings
+    enable_streaming_messages: bool = Field(True, description="Enable real-time message streaming")
+    stream_chunk_size: int = Field(500, description="Characters per streaming update", ge=100, le=2000)
+    stream_update_interval: int = Field(1000, description="Milliseconds between stream updates", ge=500, le=5000)
+    max_stream_messages: int = Field(10, description="Maximum messages per stream session", ge=5, le=20)
+    streaming_mode: str = Field("full", description="Streaming mode: full, simple, disabled")
+
     # Monitoring
     log_level: str = Field("INFO", description="Logging level")
     enable_telemetry: bool = Field(False, description="Enable anonymous telemetry")
@@ -209,6 +216,15 @@ class Settings(BaseSettings):
         if v.upper() not in valid_levels:
             raise ValueError(f"log_level must be one of {valid_levels}")
         return v.upper()  # type: ignore[no-any-return]
+
+    @field_validator("streaming_mode")
+    @classmethod
+    def validate_streaming_mode(cls, v: Any) -> str:
+        """Validate streaming mode."""
+        valid_modes = ["full", "simple", "disabled"]
+        if v.lower() not in valid_modes:
+            raise ValueError(f"streaming_mode must be one of {valid_modes}")
+        return v.lower()  # type: ignore[no-any-return]
 
     @model_validator(mode="after")
     def validate_cross_field_dependencies(self) -> "Settings":
