@@ -113,26 +113,27 @@ class ToolMonitor:
         if tool_name in ["bash", "shell", "Bash"]:
             command = tool_input.get("command", "")
 
-            # Check for dangerous commands
+            # Check for dangerous commands using regex patterns for better precision
+            import re
             dangerous_patterns = [
-                "rm -rf",
-                "sudo",
-                "chmod 777",
-                "curl",
-                "wget",
-                "nc ",
-                "netcat",
-                ">",
-                ">>",
-                "|",
-                "&",
-                ";",
-                "$(",
-                "`",
+                r"\brm\s+-rf\b",           # rm -rf (word boundaries)
+                r"\bsudo\b",               # sudo command
+                r"chmod\s+777",            # chmod 777
+                r"\bcurl\b.*\|\s*sh",      # curl piped to shell
+                r"\bwget\b.*\|\s*sh",      # wget piped to shell
+                r"\bnc\s+",                # netcat with args
+                r"\bnetcat\b",             # netcat command
+                r">\s*/dev/",              # redirect to dangerous paths
+                r">>\s*/dev/",             # append to dangerous paths
+                r"\|\s*mail\b",            # pipe to mail
+                r";\s*(rm|del|format)\b",  # chained dangerous commands
+                r"&&\s*(rm|del|format)\b", # conditional dangerous commands
+                r"\$\([^)]*\)",            # command substitution
+                r"`[^`]+`",                # backtick command substitution
             ]
 
             for pattern in dangerous_patterns:
-                if pattern in command.lower():
+                if re.search(pattern, command, re.IGNORECASE):
                     violation = {
                         "type": "dangerous_command",
                         "tool_name": tool_name,
